@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"github.com/google/uuid"
+	"github.com/trbute-boot/chirpy/internal/auth"
 	"github.com/trbute-boot/chirpy/internal/database"
 	"net/http"
 	"slices"
@@ -20,8 +22,7 @@ type Chirp struct {
 
 func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body   string    `json:"body"`
-		UserId uuid.UUID `json:"user_id"`
+		Body string `json:"body"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -29,6 +30,18 @@ func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, r *http.Request) 
 	err := decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Unable to decode parameters", err)
+		return
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unable to retrieve token", err)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Token invalid", err)
 		return
 	}
 
@@ -41,7 +54,7 @@ func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, r *http.Request) 
 	params.Body = replaceProfanity(params.Body)
 	chirp, err := cfg.db.CreateChirp(r.Context(), database.CreateChirpParams{
 		Body:   params.Body,
-		UserID: params.UserId,
+		UserID: userID,
 	})
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Unable to create chirp", err)
@@ -58,9 +71,50 @@ func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, r *http.Request) 
 }
 
 func (cfg *apiConfig) handleGetAllChirps(w http.ResponseWriter, r *http.Request) {
-	chirps, err := cfg.db.GetAllChirps(r.Context())
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Unable to retrieve chirps", err)
+	authorQuery := r.URL.Query().Get("author_id")
+	sortQuery := r.URL.Query().Get("sort")
+	if sortQuery != "" && sortQuery != "asc" && sortQuery != "desc" {
+		respondWithError(w, http.StatusBadRequest, "Invalid sort argument", errors.New("Invalid sort argument"))
+		return
+	}
+
+	var chirps []database.Chirp
+	var err error
+
+	if authorQuery == "" {
+		if sortQuery == "" || sortQuery == "asc" {
+			chirps, err = cfg.db.GetAllChirps(r.Context())
+			if err != nil {
+				respondWithError(w, http.StatusInternalServerError, "Unable to retrieve chirps", err)
+				return
+			}
+		} else {
+			chirps, err = cfg.db.GetAllChirpsDesc(r.Context())
+			if err != nil {
+				respondWithError(w, http.StatusInternalServerError, "Unable to retrieve chirps", err)
+				return
+			}
+		}
+	} else {
+		authorId, err := uuid.Parse(authorQuery)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "Invalid author ID", err)
+			return
+		}
+
+		if sortQuery == "" || sortQuery == "asc" {
+			chirps, err = cfg.db.GetChirpsByAuthor(r.Context(), authorId)
+			if err != nil {
+				respondWithError(w, http.StatusInternalServerError, "Unable to retrieve chirps", err)
+				return
+			}
+		} else {
+			chirps, err = cfg.db.GetChirpsByAuthorDesc(r.Context(), authorId)
+			if err != nil {
+				respondWithError(w, http.StatusInternalServerError, "Unable to retrieve chirps", err)
+				return
+			}
+		}
 	}
 
 	chirpRes := []Chirp{}
@@ -75,6 +129,7 @@ func (cfg *apiConfig) handleGetAllChirps(w http.ResponseWriter, r *http.Request)
 	}
 
 	respondWithJSON(w, http.StatusOK, chirpRes)
+
 }
 
 func (cfg *apiConfig) handleGetChirpById(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +152,53 @@ func (cfg *apiConfig) handleGetChirpById(w http.ResponseWriter, r *http.Request)
 		Body:      chirp.Body,
 		UserID:    chirp.UserID,
 	})
+}
+
+func (cfg *apiConfig) handleDeleteChirpById(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Body string `json:"body"`
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unable to retrieve token", err)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Token invalid", err)
+		return
+	}
+
+	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid chirp ID", err)
+		return
+	}
+
+	chirp, err := cfg.db.GetChirpById(r.Context(), chirpID)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "Chirp not found", err)
+		return
+	}
+
+	if chirp.UserID != userID {
+		respondWithError(w, http.StatusForbidden, "Requester and chirp userid do not match", err)
+		return
+	}
+
+	err = cfg.db.DeleteChirpById(r.Context(), database.DeleteChirpByIdParams{
+		ID:     chirpID,
+		UserID: userID,
+	})
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed deleting chirp", err)
+		return
+	}
+
+	respondWithJSON(w, http.StatusNoContent, nil)
 }
 
 func replaceProfanity(s string) string {

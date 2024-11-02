@@ -62,7 +62,7 @@ func TestInvalidSecret(t *testing.T) {
 
 func TestValidHeaders(t *testing.T) {
 	headers := http.Header{}
-	headers.Set("Authorization", "Bearer: Hello")
+	headers.Set("Authorization", "Bearer Hello")
 	_, err := GetBearerToken(headers)
 	if err != nil {
 		t.Fatalf("%v", err)
@@ -71,7 +71,7 @@ func TestValidHeaders(t *testing.T) {
 
 func TestInvalidHeaders(t *testing.T) {
 	headers := http.Header{}
-	headers.Set("Authorization", "Boarer: Hello")
+	headers.Set("Authorization", "Boarer Hello")
 	_, err := GetBearerToken(headers)
 	if err == nil {
 		t.Fatalf("Expected error to occur")

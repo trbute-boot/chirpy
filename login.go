@@ -3,14 +3,21 @@ package main
 import (
 	"encoding/json"
 	"github.com/trbute-boot/chirpy/internal/auth"
+	"github.com/trbute-boot/chirpy/internal/database"
 	"net/http"
+	"time"
 )
 
-func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.:Request) {
+func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
-ExpiresInSeconds string `json:"expires_in_seconds"`
+	}
+
+	type response struct {
+		User
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -33,21 +40,44 @@ ExpiresInSeconds string `json:"expires_in_seconds"`
 		return
 	}
 
-	expires, ok := params.time_in_seconds
-	if !ok || expires > 3600 {
-		expires = 3600
+	expiresInSeconds := 3600
+
+	expireDuration := time.Duration(time.Duration(expiresInSeconds) * time.Second)
+
+	token, err := auth.MakeJWT(user.ID, cfg.jwtSecret, expireDuration)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "JWT creation failed", err)
+		return
 	}
 
-	expireDuration := Duration(expires * time.Second)
+	refreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Refresh token creation failed", err)
+		return
+	}
 
+	day := 24 * time.Hour
+	refreshExpire := time.Now().Add(60 * day)
 
-	token, err := auth.MakeJWT(user.ID, cfg.jwtSecret, 
+	_, err = cfg.db.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+		Token:     refreshToken,
+		UserID:    user.ID,
+		ExpiresAt: refreshExpire,
+	})
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Refresh token db insert failed", err)
+		return
+	}
 
-	respondWithJSON(w, http.StatusOK, User{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
-		Token:	   token,
+	respondWithJSON(w, http.StatusOK, response{
+		User: User{
+			ID:          user.ID,
+			CreatedAt:   user.CreatedAt,
+			UpdatedAt:   user.UpdatedAt,
+			Email:       user.Email,
+			IsChirpyRed: user.IsChirpyRed,
+		},
+		Token:        token,
+		RefreshToken: refreshToken,
 	})
 }
